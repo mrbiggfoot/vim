@@ -12,6 +12,7 @@
  */
 
 #include "vim.h"
+#include "tags_cache.hpp"
 
 /*
  * Structure to hold pointers to various items in a tag line.
@@ -4256,3 +4257,40 @@ set_tagstack(win_T *wp, dict_T *d, int action)
     return OK;
 }
 #endif
+
+/*
+ * Get fuzzy matches from the tags cache.
+ * '*matches' must be freed, but not its individual elements.
+ */
+void find_tags_fuzzy(const char_u *pattern,
+                     const char_u ***matches,
+                     int *num_matches,
+                     int ignore_case) {
+    // Update tag caches.
+    const char *compl_tags = NULL;
+    if (curbuf) {
+	dictitem_T *const tags_di =
+	    dict_find(curbuf->b_vars, "compl_tags", -1);
+	if (tags_di && tags_di->di_tv.v_type == VAR_STRING) {
+	    compl_tags = (const char *)tags_di->di_tv.vval.v_string;
+	}
+    }
+    update_tags_cache_start();
+    if (compl_tags) {
+	// We have buffer specific completion tags set in 'b:compl_tags'.
+	update_tags_cache(compl_tags);
+    } else {
+	tagname_T tn;
+	char_u fname[MAXPATHL + 1];
+	for (int first = TRUE;
+	     get_tagfname(&tn, first, fname) == OK;
+	     first = FALSE) {
+	    update_tags_cache((const char *)fname);
+	}
+	tagname_free(&tn);
+    }
+    update_tags_cache_finish();
+
+    get_tags_cache_matches((const char *)pattern, (const char ***)matches,
+			   num_matches, ignore_case);
+}

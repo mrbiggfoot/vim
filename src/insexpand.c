@@ -12,6 +12,7 @@
  */
 
 #include "vim.h"
+#include "match.hpp"
 
 #ifdef FEAT_INS_EXPAND
 /*
@@ -83,32 +84,6 @@ static char *ctrl_x_mode_names[] = {
 	"eval"
 };
 
-/*
- * Array indexes used for cp_text[].
- */
-#define CPT_ABBR	0	// "abbr"
-#define CPT_MENU	1	// "menu"
-#define CPT_KIND	2	// "kind"
-#define CPT_INFO	3	// "info"
-#define CPT_USER_DATA	4	// "user data"
-#define CPT_COUNT	5	// Number of entries
-
-/*
- * Structure used to store one match for insert completion.
- */
-typedef struct compl_S compl_T;
-struct compl_S
-{
-    compl_T	*cp_next;
-    compl_T	*cp_prev;
-    char_u	*cp_str;	// matched text
-    char_u	*(cp_text[CPT_COUNT]);	// text for the menu
-    char_u	*cp_fname;	// file containing the match, allocated when
-				// cp_flags has CP_FREE_FNAME
-    int		cp_flags;	// CP_ values
-    int		cp_number;	// sequence number
-};
-
 // values for cp_flags
 # define CP_ORIGINAL_TEXT   1	// the original text when the expansion begun
 # define CP_FREE_FNAME	    2	// cp_fname is allocated
@@ -149,6 +124,7 @@ static int	  compl_no_insert = FALSE;	// FALSE: select & insert
 						// TRUE: noinsert
 static int	  compl_no_select = FALSE;	// FALSE: select & insert
 						// TRUE: noselect
+static int	  compl_fuzzy = FALSE;		// enable fuzzy matching
 
 // Selected one of the matches.  When FALSE the match was edited or using the
 // longest common string.
@@ -622,6 +598,7 @@ ins_compl_add(
 	vim_free(match);
 	return FAIL;
     }
+    match->has_match = TRUE;
 
     // match-fname is:
     // - compl_curr_match->cp_fname if it is a string equal to fname.
@@ -685,6 +662,10 @@ ins_compl_add(
     static int
 ins_compl_equal(compl_T *match, char_u *str, int len)
 {
+    if (compl_fuzzy) {
+	return has_custom_match((const char *)str, (const char *)match->cp_str,
+				match->cp_flags & CP_ICASE);
+    }
     if (match->cp_flags & CP_EQUAL)
 	return TRUE;
     if (match->cp_flags & CP_ICASE)
@@ -794,6 +775,27 @@ ins_compl_add_matches(
 }
 
 /*
+ * Add an array of matches to the list of matches.
+ * This function is called to add fuzzy matches which already don't have
+ * duplicates.
+ * Does not free matches[].
+ */
+static void ins_compl_add_matches_nofree(int num_matches, char_u **matches,
+					 int icase)
+{
+    int i;
+    int add_r = OK;
+    int dir = compl_direction;
+
+    for (i = 0; i < num_matches && add_r != FAIL; i++)
+	if ((add_r = ins_compl_add(matches[i], -1, NULL, NULL, dir,
+				   icase ? CP_ICASE : 0, TRUE)) == OK) {
+	    // If dir was BACKWARD then honor it just once.
+	    dir = FORWARD;
+	}
+}
+
+/*
  * Make the completion list cyclic.
  * Return the number of matches (excluding the original).
  */
@@ -848,10 +850,13 @@ completeopt_was_set(void)
 {
     compl_no_insert = FALSE;
     compl_no_select = FALSE;
+    compl_fuzzy = FALSE;
     if (strstr((char *)p_cot, "noselect") != NULL)
 	compl_no_select = TRUE;
     if (strstr((char *)p_cot, "noinsert") != NULL)
 	compl_no_insert = TRUE;
+    if (strstr((char *)p_cot, "fuzzy") != NULL)
+	compl_fuzzy = TRUE;
 }
 
 /*
@@ -1064,12 +1069,22 @@ ins_compl_show_pum(void)
 	{
 	    if ((compl->cp_flags & CP_ORIGINAL_TEXT) == 0
 		    && (compl_leader == NULL
-			|| ins_compl_equal(compl, compl_leader, lead_len)))
+			|| ins_compl_equal(compl, compl_leader, lead_len))) {
 		++compl_match_arraysize;
+		compl->has_match = TRUE;
+	    } else {
+		compl->has_match = ((compl->cp_flags & CP_ORIGINAL_TEXT) != 0);
+	    }
 	    compl = compl->cp_next;
 	} while (compl != NULL && compl != compl_first_match);
 	if (compl_match_arraysize == 0)
 	    return;
+
+	if (compl_fuzzy && compl_leader != NULL) {
+	    sort_custom_matches((const char *)compl_leader,
+				&compl_first_match);
+	}
+
 	compl_match_array = ALLOC_CLEAR_MULT(pumitem_T, compl_match_arraysize);
 	if (compl_match_array != NULL)
 	{
@@ -1095,12 +1110,23 @@ ins_compl_show_pum(void)
 			    compl_shown_match = compl;
 			    did_find_shown_match = TRUE;
 			    shown_match_ok = TRUE;
+			    cur = i;
+			} else {
+			    if (compl_fuzzy) {
+				/* For fuzzy match remember the first shown
+				 * match since it will be the closest
+				 * candidate. */
+				if (!shown_compl) {
+				    shown_compl = compl;
+				    cur = i;
+				}
+			    } else {
+				/* Remember this displayed match for when the
+				 * shown match is just below it. */
+				shown_compl = compl;
+				cur = i;
+			    }
 			}
-			else
-			    // Remember this displayed match for when the
-			    // shown match is just below it.
-			    shown_compl = compl;
-			cur = i;
 		    }
 
 		    if (compl->cp_text[CPT_ABBR] != NULL)
@@ -1136,6 +1162,11 @@ ins_compl_show_pum(void)
 		}
 		compl = compl->cp_next;
 	    } while (compl != NULL && compl != compl_first_match);
+
+	    if (compl_fuzzy && !shown_match_ok && shown_compl) {
+		compl_shown_match = shown_compl;
+		shown_match_ok = TRUE;
+	    }
 
 	    if (!shown_match_ok)    // no displayed match at all
 		cur = -1;
@@ -2650,15 +2681,24 @@ ins_compl_get_exp(pos_T *ini)
 	    save_p_ic = p_ic;
 	    p_ic = ignorecase(compl_pattern);
 
-	    // Find up to TAG_MANY matches.  Avoids that an enormous number
-	    // of matches is found when compl_pattern is empty
-	    g_tag_at_cursor = TRUE;
-	    if (find_tags(compl_pattern, &num_matches, &matches,
-		    TAG_REGEXP | TAG_NAMES | TAG_NOIC | TAG_INS_COMP
-		    | (ctrl_x_mode != CTRL_X_NORMAL ? TAG_VERBOSE : 0),
-		    TAG_MANY, curbuf->b_ffname) == OK && num_matches > 0)
-		ins_compl_add_matches(num_matches, matches, p_ic);
-	    g_tag_at_cursor = FALSE;
+	    if (compl_fuzzy && compl_length >= MIN_CUSTOM_PATTERN_LENGTH) {
+		find_tags_fuzzy(compl_pattern + 2, (const char_u ***)&matches,
+				&num_matches, p_ic);
+		if (num_matches > 0) {
+		    ins_compl_add_matches_nofree(num_matches, matches, p_ic);
+		    free(matches);
+		}
+	    } else {
+		// Find up to TAG_MANY matches.  Avoids that an enormous number
+		// of matches is found when compl_pattern is empty
+		g_tag_at_cursor = TRUE;
+		if (find_tags(compl_pattern, &num_matches, &matches,
+			TAG_REGEXP | TAG_NAMES | TAG_NOIC | TAG_INS_COMP
+			| (ctrl_x_mode != CTRL_X_NORMAL ? TAG_VERBOSE : 0),
+			TAG_MANY, curbuf->b_ffname) == OK && num_matches > 0)
+		    ins_compl_add_matches(num_matches, matches, p_ic);
+		g_tag_at_cursor = FALSE;
+	    }
 	    p_ic = save_p_ic;
 	    break;
 
@@ -2871,6 +2911,12 @@ ins_compl_get_exp(pos_T *ini)
 	    compl_started = FALSE;
 	}
     }
+
+    if (compl_fuzzy) {
+	sort_custom_matches((const char *)compl_pattern + 2,
+			    &compl_first_match);
+    }
+
     compl_started = TRUE;
 
     if ((ctrl_x_mode == CTRL_X_NORMAL || ctrl_x_mode_line_or_eval())
@@ -3524,7 +3570,7 @@ ins_complete(int c, int enable_pum)
 			;
 		compl_col += ++startcol;
 		compl_length = (int)curs_col - startcol;
-		if (compl_length == 1)
+		if (compl_length == 1 && !compl_fuzzy)
 		{
 		    // Only match word with at least two chars -- webb
 		    // there's no need to call quote_meta,

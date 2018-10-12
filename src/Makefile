@@ -659,7 +659,7 @@ LINT_OPTIONS = -beprxzF
 # Might not work with GUI or Perl.
 # After running Vim see the profile result with: gprof vim gmon.out | vim -
 # Need to recompile everything after changing this: "make clean" "make".
-#PROFILE_CFLAGS = -pg -g -DWE_ARE_PROFILING
+#PROFILE_CFLAGS = -pg -g -DWE_ARE_PROFILING -O0
 #PROFILE_LIBS = -pg
 
 # GCC 5 and later need the -no-pie argument.
@@ -1237,6 +1237,8 @@ PRINTSOURCE = ../runtime/print
 #LINKIT = ln -f -s $(DEST_BIN)/$(VIMTARGET) $(DESTDIR)/usr/bin/vi
 LINKIT = @echo >/dev/null
 
+LIBS += -lstdc++ -lpthread
+
 ###
 ### GRAPHICAL USER INTERFACE (GUI).  {{{1
 ### 'configure --enable-gui' can enable one of these for you if you did set
@@ -1600,6 +1602,7 @@ BASIC_SRC = \
 	fileio.c \
 	findfile.c \
 	fold.c \
+	fzy/match.c \
 	getchar.c \
 	hardcopy.c \
 	hashtab.c \
@@ -1611,6 +1614,7 @@ BASIC_SRC = \
 	list.c \
 	main.c \
 	mark.c \
+	match.cpp \
 	memfile.c \
 	memline.c \
 	menu.c \
@@ -1638,6 +1642,7 @@ BASIC_SRC = \
 	spellfile.c \
 	syntax.c \
 	tag.c \
+	tags_cache.cpp \
 	term.c \
 	terminal.c \
 	textprop.c \
@@ -1729,6 +1734,8 @@ OBJ_COMMON = \
 	objects/insexpand.o \
 	objects/list.o \
 	objects/mark.o \
+	objects/match.o \
+	objects/match_cpp.o \
 	objects/memline.o \
 	objects/menu.o \
 	objects/misc1.o \
@@ -1754,6 +1761,7 @@ OBJ_COMMON = \
 	objects/spellfile.o \
 	objects/syntax.o \
 	objects/tag.o \
+	objects/tags_cache.o \
 	objects/term.o \
 	objects/terminal.o \
 	objects/textprop.o \
@@ -2008,6 +2016,10 @@ cmdidxs: ex_cmds.h
 # Without or with ALL_CFLAGS.
 CCC_NF = $(CC) -c -I$(srcdir)
 CCC = $(CCC_NF) $(ALL_CFLAGS)
+
+
+# Command to compile a .cpp to its .o file.
+CCCP = $(CXX) -c -I$(srcdir) -std=c++11 -g -O3 $(PROFILE_CFLAGS)
 
 
 # Link the target for normal use or debugging.
@@ -3153,6 +3165,12 @@ objects/main.o: main.c
 objects/mark.o: mark.c
 	$(CCC) -o $@ mark.c
 
+objects/match.o: fzy/match.c
+	$(CCC) -o $@ fzy/match.c
+
+objects/match_cpp.o: match.cpp
+	$(CCCP) -o objects/match_cpp.o match.cpp
+
 objects/memfile.o: memfile.c
 	$(CCC) -o $@ memfile.c
 
@@ -3257,6 +3275,9 @@ objects/syntax.o: syntax.c
 
 objects/tag.o: tag.c
 	$(CCC) -o $@ tag.c
+
+objects/tags_cache.o: tags_cache.cpp
+	$(CCCP) -o $@ tags_cache.cpp
 
 objects/term.o: term.c
 	$(CCC) -o $@ term.c
